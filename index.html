@@ -90,7 +90,7 @@ details summary:before{content:"▸ ";color:var(--faint)}details[open] summary:b
 .wl{color:var(--accent);background:none;border:0;padding:2px 0;font:inherit;cursor:pointer}
 .wl:after{content:" ·";color:var(--faint)}.wl:last-child:after{content:""}
 #hint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--faint)}
-</style></head><body>
+#realtor-workbench article{padding:12px 0;border-top:1px solid #444;overflow-wrap:anywhere}#realtor-workbench input,#realtor-workbench select{font:inherit;max-width:100%;box-sizing:border-box}#realtor-workbench label{display:block;margin:12px 0}#realtor-workbench summary{padding:12px 0}</style></head><body>
 
 <div id="lock" style="position:fixed;inset:0;z-index:100;background:#1e1e1e;display:flex;align-items:center;justify-content:center;padding:24px">
  <form id="lf" style="width:100%;max-width:340px;text-align:center">
@@ -170,6 +170,14 @@ async function renderPrivateFollowups(){
  document.getElementById('fu-export').onclick=async()=>{const blob=new Blob([JSON.stringify(await sealFollowups(privateFollowups))],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 }
 
+
+function initRealtorReview(){
+ const root=document.getElementById('realtor-workbench');if(!root)return;
+ const search=root.querySelector('[data-review-search]'),filter=root.querySelector('[data-review-filter]');
+ const update=()=>{let n=0;root.querySelectorAll('[data-review-kind]').forEach(e=>{e.hidden=!(filter.value==='all'||e.dataset.reviewKind===filter.value)||!e.textContent.toLowerCase().includes(search.value.toLowerCase());if(!e.hidden)n++});root.querySelector('[data-review-count]').textContent=n+' matching items';};
+ search.oninput=update;filter.onchange=update;update();
+}
+
 function render(){
   const T=document.getElementById('today');
   const em=D.emails||[];const top=em.filter(e=>e.tier===1&&!e.old),lead=em.filter(e=>e.tier===2),rest=em.filter(e=>e.tier>2||(e.tier===1&&e.old));
@@ -228,7 +236,10 @@ function render(){
     if(ts.length>6)h+='<details><summary>'+(ts.length-6)+' more</summary>'+ts.slice(6).map(topicRow).join('')+'</details>';h+='</div>'});
   h+='</div><div class="muted" style="margin-top:8px">Tap a topic to see where it stands, or open the <a href="#web">topic web</a> to see how they connect.</div></div>';
   if(fyi.items.length||done.items.length)h+='<div class="card"><h2>✅ Done & FYI</h2>'+done.items.concat(fyi.items).map(i=>'<div class="item">'+i+'</div>').join('')+'</div>';
+  h='<p><a class="btn" href="#realtor-workbench">Calls & outgoing review</a></p>'+h;
+  h+='<div class="card">'+(D.realtor_review?.html||'<p>Realtor review unavailable in this snapshot.</p>')+'</div>';
   T.innerHTML=h;
+  initRealtorReview();
   renderPrivateFollowups();
   T.querySelectorAll('.g').forEach(x=>x.onclick=()=>{const el=document.getElementById('c-'+x.dataset.k);el&&el.scrollIntoView({behavior:'smooth'})});
   T.querySelectorAll('.trow[data-id]').forEach(x=>x.onclick=()=>openNote(x.dataset.id));
@@ -296,6 +307,7 @@ function drawWeb(){if(FG)return;const el=document.getElementById('graph');const 
   document.getElementById('legend').innerHTML='<b style="color:#dcddde">Big dots</b> = your 3 areas<br><span class="dot" style="background:#4fc1a6"></span> properties · <span class="dot" style="background:#b0b0b0"></span> people · <span class="dot" style="background:#6a9ff5"></span> themes<br><span style="color:#f0c27a">Glow</span> = your turn · grey = closed or automatic'}
 function index(){byId={};nbrs={};D.graph.nodes.forEach(n=>{byId[n.id]=n;nbrs[n.id]=new Set()});D.graph.edges.forEach(l=>{nbrs[l.source]&&nbrs[l.source].add(l.target);nbrs[l.target]&&nbrs[l.target].add(l.source)})}
 function route(){const web=location.hash==='#web';document.body.classList.toggle('web',web);document.getElementById('s-web').classList.toggle('on',web);document.getElementById('s-today').classList.toggle('on',!web);
+  if(location.hash==='#realtor-workbench')document.getElementById('realtor-workbench')?.scrollIntoView({block:'start'});
   if(location.hash==='#followups')document.getElementById('c-followups')?.scrollIntoView({block:'start'});
   if(D&&(web||innerWidth>=1100))setTimeout(drawWeb,30)}
 addEventListener('hashchange',route);
