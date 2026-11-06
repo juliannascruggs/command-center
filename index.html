@@ -103,13 +103,14 @@ details summary:before{content:"▸ ";color:var(--faint)}details[open] summary:b
  </form>
 </div>
 <script>
+let CC_SECRET="";
 const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 async function decryptWith(pw,E){const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(pw),'PBKDF2',false,['deriveKey']);
  const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:b64(E.salt),iterations:E.iter,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['decrypt']);
  const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64(E.iv)},k,b64(E.ct));return JSON.parse(new TextDecoder().decode(pt))}
 function loadLocked(){return fetch('data.enc.json?'+Date.now()).then(r=>r.json()).then(E=>new Promise((res)=>{
  const L=document.getElementById('lock'),f=document.getElementById('lf'),p=document.getElementById('lp'),er=document.getElementById('le');
- const tryPw=async(pw,saved)=>{try{const d=await decryptWith(pw,E);if(document.getElementById('lr').checked||saved)localStorage.setItem('cc_pw',pw);L.remove();res(d)}
+ const tryPw=async(pw,saved)=>{try{const d=await decryptWith(pw,E);CC_SECRET=pw;if(document.getElementById('lr').checked||saved)localStorage.setItem('cc_pw',pw);L.remove();res(d)}
    catch(e){if(saved){localStorage.removeItem('cc_pw')}else{er.textContent='That password didn’t work.';p.select()}}};
  const sv=localStorage.getItem('cc_pw');if(sv)tryPw(sv,true);
  f.onsubmit=e=>{e.preventDefault();er.textContent='Opening…';tryPw(p.value,false)};}))}
@@ -144,6 +145,31 @@ function compassify(text){const c=(D.briefing&&D.briefing.compass)||{};let t=esc
   Object.entries(c).forEach(([addr,u])=>{const short=addr.split(' ').slice(0,2).join(' ');const re=new RegExp('('+short.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'[^,·|<]*)','i');
     if(re.test(t)&&!t.includes('href'))t=t.replace(re,'<a href="'+u+'" target="_blank">$1</a>')});return t}
 
+
+let privateFollowups=null;
+async function sealFollowups(value){
+ const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
+ const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(CC_SECRET),'PBKDF2',false,['deriveKey']);
+ const k=await crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:600000,hash:'SHA-256'},k0,{name:'AES-GCM',length:256},false,['encrypt']);
+ const ct=new Uint8Array(await crypto.subtle.encrypt({name:'AES-GCM',iv},k,new TextEncoder().encode(JSON.stringify(value))));
+ const enc=x=>btoa(String.fromCharCode(...x));return {v:1,iter:600000,salt:enc(salt),iv:enc(iv),ct:enc(ct)};
+}
+async function renderPrivateFollowups(){
+ const box=document.getElementById('private-followups');
+ if(!privateFollowups){
+  const saved=localStorage.getItem('cc_followups_encrypted');
+  try{privateFollowups=saved?await decryptWith(CC_SECRET,JSON.parse(saved)):structuredClone(D.saved_followups||{items:[]});if(!Array.isArray(privateFollowups?.items))throw new Error('bad followups shape')}
+  catch(e){box.textContent='Saved edits could not be unlocked. They have not been overwritten.';return}
+ }
+ const items=privateFollowups.items;
+ box.innerHTML='<p>'+items.filter(x=>x.status!=='done').length+' open · '+items.filter(x=>x.status==='done').length+' done</p>'+items.map((x,i)=>'<div class="item"><label><input type="checkbox" data-check="'+i+'" '+(x.status==='done'?'checked':'')+'> '+esc(x.name)+'</label><div>'+esc(x.what)+'</div><div class="meta">'+esc(x.context||'')+'</div><div>'+esc(x.phone||'')+'</div><label>Notes <textarea data-note="'+i+'" style="width:100%">'+esc(x.notes||'')+'</textarea></label></div>').join('')+'<button id="fu-add" type="button">Add someone</button><button id="fu-save" type="button">Save edits on this device</button>';
+ box.querySelectorAll('[data-check]').forEach(e=>e.onchange=()=>{items[+e.dataset.check].status=e.checked?'done':'open'});
+ box.querySelectorAll('[data-note]').forEach(e=>e.oninput=()=>{items[+e.dataset.note].notes=e.value});
+ document.getElementById('fu-add').onclick=()=>{const name=prompt('Name');if(!name)return;const what=prompt('Follow-up');if(!what)return;items.push({id:crypto.randomUUID(),name,what,status:'open',notes:''});renderPrivateFollowups()};
+ document.getElementById('fu-save').onclick=async()=>{const state=document.getElementById('fu-state');try{state.textContent=' Saving…';privateFollowups.updatedAt=Date.now();localStorage.setItem('cc_followups_encrypted',JSON.stringify(await sealFollowups(privateFollowups)));state.textContent=' Saved encrypted on this device';}catch(e){state.textContent=' Could not save. Keep this page open and download a backup.'}};
+ document.getElementById('fu-export').onclick=async()=>{const blob=new Blob([JSON.stringify(await sealFollowups(privateFollowups))],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
+}
+
 function render(){
   const T=document.getElementById('today');
   const em=D.emails||[];const top=em.filter(e=>e.tier===1&&!e.old),lead=em.filter(e=>e.tier===2),rest=em.filter(e=>e.tier>2||(e.tier===1&&e.old));
@@ -161,7 +187,7 @@ function render(){
     g('needs','From this morning',needs.items.length,needs.items.length)+g('cal','Coming up',cal.filter(e=>!e.allday).length,0)+
     g('followups','My follow-ups','↗',0)+g('topics','Topics on you',myTopics.length,myTopics.length)+'</div>';
   // Embed the existing editor: one list, one save endpoint, no copied records.
-  h+='<div class="card" id="c-followups"><h2>📋 My follow-ups</h2><p class="meta">Your saved list — edit notes, add someone, or mark done. Separate from CRM reminders below.</p><div class="acts"><a class="btn ghost" href="/skills/#followups">Open full list ↗</a><button class="ib" id="fu-reload" type="button">Reload list</button></div><iframe id="followups-editor" title="Your editable follow-up list" src="/skills/?embed=followups#followups" style="width:100%;height:65dvh;min-height:420px;border:1px solid var(--line);border-radius:10px;margin-top:10px;background:var(--bg)"></iframe><p class="muted">If the list does not load, tap Open full list or Reload list.</p></div>';
+  h+='<div class="card" id="c-followups"><h2>My follow-ups</h2><p class="meta">Saved list from October 29. Status has not been rechecked. Edits stay encrypted on this device; they do not sync to Ace or other devices.</p><div id="private-followups"></div><button id="fu-export" type="button">Download encrypted backup</button><span id="fu-state" role="status"></span></div>';
   // People waiting
   h+='<div class="card" id="c-people"><h2>✉️ People waiting on you<span class="n">'+top.length+'</span></h2>';
   if(!top.length)h+='<div class="muted">Nobody important is waiting on an email reply. 🎉</div>';
@@ -203,7 +229,7 @@ function render(){
   h+='</div><div class="muted" style="margin-top:8px">Tap a topic to see where it stands, or open the <a href="#web">topic web</a> to see how they connect.</div></div>';
   if(fyi.items.length||done.items.length)h+='<div class="card"><h2>✅ Done & FYI</h2>'+done.items.concat(fyi.items).map(i=>'<div class="item">'+i+'</div>').join('')+'</div>';
   T.innerHTML=h;
-  document.getElementById('fu-reload').onclick=()=>{document.getElementById('followups-editor').src='/skills/?embed=followups#followups'};
+  renderPrivateFollowups();
   T.querySelectorAll('.g').forEach(x=>x.onclick=()=>{const el=document.getElementById('c-'+x.dataset.k);el&&el.scrollIntoView({behavior:'smooth'})});
   T.querySelectorAll('.trow[data-id]').forEach(x=>x.onclick=()=>openNote(x.dataset.id));
 }
