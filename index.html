@@ -146,7 +146,16 @@ function compassify(text){const c=(D.briefing&&D.briefing.compass)||{};let t=esc
     if(re.test(t)&&!t.includes('href'))t=t.replace(re,'<a href="'+u+'" target="_blank">$1</a>')});return t}
 
 
-let privateFollowups=null;
+let privateFollowups=null,sharedRevision=null,sharedToken=null;
+const SHARED_ENDPOINT="https://juliannas-mac-mini.tail6a2ec1.ts.net:8443/followups-api";
+async function sharedRequest(path,method='GET',data){
+ const r=await fetch(SHARED_ENDPOINT+path,{method,headers:{'Content-Type':'application/json',...(sharedToken?{'Authorization':'Bearer '+sharedToken}:{})},...(data?{body:JSON.stringify(data)}:{})});
+ const result=await r.json();if(!r.ok)throw new Error(result.error||'Shared storage unavailable');return result;
+}
+async function sharedLoad(){
+ if(!sharedToken){const auth=await sharedRequest('/auth','POST',{password:CC_SECRET});sharedToken=auth.token;}
+ const result=await sharedRequest('/followups');privateFollowups=result.data;sharedRevision=result.revision;
+}
 async function sealFollowups(value){
  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12));
  const k0=await crypto.subtle.importKey('raw',new TextEncoder().encode(CC_SECRET),'PBKDF2',false,['deriveKey']);
@@ -157,16 +166,18 @@ async function sealFollowups(value){
 async function renderPrivateFollowups(){
  const box=document.getElementById('private-followups');
  if(!privateFollowups){
-  const saved=localStorage.getItem('cc_followups_encrypted');
-  try{privateFollowups=saved?await decryptWith(CC_SECRET,JSON.parse(saved)):structuredClone(D.saved_followups||{items:[]});if(!Array.isArray(privateFollowups?.items))throw new Error('bad followups shape')}
-  catch(e){box.textContent='Saved edits could not be unlocked. They have not been overwritten.';return}
+  try{await sharedLoad();if(!Array.isArray(privateFollowups?.items))throw new Error('Invalid shared list')}
+  catch(e){box.textContent='Shared list unavailable: '+e.message+'. No local snapshot is being presented as current.';return}
+
  }
  const items=privateFollowups.items;
- box.innerHTML='<p>'+items.filter(x=>x.status!=='done').length+' open · '+items.filter(x=>x.status==='done').length+' done</p>'+items.map((x,i)=>'<div class="item"><label><input type="checkbox" data-check="'+i+'" '+(x.status==='done'?'checked':'')+'> '+esc(x.name)+'</label><div>'+esc(x.what)+'</div><div class="meta">'+esc(x.context||'')+'</div><div>'+esc(x.phone||'')+'</div><label>Notes <textarea data-note="'+i+'" style="width:100%">'+esc(x.notes||'')+'</textarea></label></div>').join('')+'<button id="fu-add" type="button">Add someone</button><button id="fu-save" type="button">Save edits on this device</button>';
+ box.innerHTML='<p>'+items.filter(x=>x.status!=='done').length+' open · '+items.filter(x=>x.status==='done').length+' done</p>'+items.map((x,i)=>'<div class="item"><label><input type="checkbox" data-check="'+i+'" '+(x.status==='done'?'checked':'')+'> '+esc(x.name)+'</label><div>'+esc(x.what)+'</div><div class="meta">'+esc(x.context||'')+'</div><div>'+esc(x.phone||'')+'</div><label>Notes <textarea data-note="'+i+'" style="width:100%">'+esc(x.notes||'')+'</textarea></label></div>').join('')+'<button id="fu-add" type="button">Add someone</button><button id="fu-save" type="button">Save shared edits</button>';
  box.querySelectorAll('[data-check]').forEach(e=>e.onchange=()=>{items[+e.dataset.check].status=e.checked?'done':'open'});
  box.querySelectorAll('[data-note]').forEach(e=>e.oninput=()=>{items[+e.dataset.note].notes=e.value});
+ const legacy=localStorage.getItem('cc_followups_encrypted');
+ if(legacy){const button=document.createElement('button');button.type='button';button.textContent='Download earlier device-only edits (encrypted)';button.onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([legacy],{type:'application/json'}));a.download='earlier-device-followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};box.appendChild(button);}
  document.getElementById('fu-add').onclick=()=>{const name=prompt('Name');if(!name)return;const what=prompt('Follow-up');if(!what)return;items.push({id:crypto.randomUUID(),name,what,status:'open',notes:''});renderPrivateFollowups()};
- document.getElementById('fu-save').onclick=async()=>{const state=document.getElementById('fu-state');try{state.textContent=' Saving…';privateFollowups.updatedAt=Date.now();localStorage.setItem('cc_followups_encrypted',JSON.stringify(await sealFollowups(privateFollowups)));state.textContent=' Saved encrypted on this device';}catch(e){state.textContent=' Could not save. Keep this page open and download a backup.'}};
+ document.getElementById('fu-save').onclick=async()=>{const state=document.getElementById('fu-state'),button=document.getElementById('fu-save');button.disabled=true;try{state.textContent=' Saving to shared list…';const result=await sharedRequest('/followups','PUT',{data:privateFollowups,revision:sharedRevision});const check=await sharedRequest('/followups');if(check.revision!==result.revision)throw new Error('List changed after save; reload before editing again');privateFollowups=check.data;sharedRevision=check.revision;renderPrivateFollowups();state.textContent=' Saved to shared list · Ace can read these edits';}catch(e){state.textContent=' Not confirmed saved: '+e.message+' Keep this page open; download an encrypted backup before reloading.'}finally{button.disabled=false}};
  document.getElementById('fu-export').onclick=async()=>{const blob=new Blob([JSON.stringify(await sealFollowups(privateFollowups))],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 }
 
@@ -195,7 +206,7 @@ function render(){
     g('needs','From this morning',needs.items.length,needs.items.length)+g('cal','Coming up',cal.filter(e=>!e.allday).length,0)+
     g('followups','My follow-ups','↗',0)+g('topics','Topics on you',myTopics.length,myTopics.length)+'</div>';
   // Embed the existing editor: one list, one save endpoint, no copied records.
-  h+='<div class="card" id="c-followups"><h2>My follow-ups</h2><p class="meta">Saved list from October 29. Status has not been rechecked. Edits stay encrypted on this device; they do not sync to Ace or other devices.</p><div id="private-followups"></div><button id="fu-export" type="button">Download encrypted backup</button><span id="fu-state" role="status"></span></div>';
+  h+='<div class="card" id="c-followups"><h2>My follow-ups</h2><p class="meta">Saved list from October 29. Status has not been rechecked. Edits save to the shared canonical follow-up list, readable by Ace and other devices. Download existing device-only edits before changing devices; they are not automatically merged.</p><div id="private-followups"></div><button id="fu-export" type="button">Download encrypted backup</button><span id="fu-state" role="status"></span></div>';
   // People waiting
   h+='<div class="card" id="c-people"><h2>✉️ People waiting on you<span class="n">'+top.length+'</span></h2>';
   if(!top.length)h+='<div class="muted">Nobody important is waiting on an email reply. 🎉</div>';
