@@ -303,7 +303,7 @@ function render(){
     if(ts.length>6)h+='<details><summary>'+(ts.length-6)+' more</summary>'+ts.slice(6).map(topicRow).join('')+'</details>';h+='</div>'});
   h+='</div><div class="muted" style="margin-top:8px">Tap a topic to see where it stands, or open the <a href="#web">topic web</a> to see how they connect.</div></div>';
   if(fyi.items.length||done.items.length)h+='<div class="card"><h2>✅ Done & FYI</h2>'+done.items.concat(fyi.items).map(i=>'<div class="item">'+i+'</div>').join('')+'</div>';
-  h='<p><a class="btn" href="#realtor-workbench">Calls & outgoing review</a></p>'+h;
+  h='<p><a class="btn" href="#realtor-workbench">Calls & outgoing review</a> <a class="btn" href="rentals.html">Rentals</a></p>'+h;
   h+='<div class="card">'+(D.realtor_review?.html||'<p>Realtor review unavailable in this snapshot.</p>')+'</div>';
   T.innerHTML=h;
   initRealtorReview();
