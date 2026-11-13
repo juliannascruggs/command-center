@@ -90,7 +90,7 @@ details summary:before{content:"▸ ";color:var(--faint)}details[open] summary:b
 .wl{color:var(--accent);background:none;border:0;padding:2px 0;font:inherit;cursor:pointer}
 .wl:after{content:" ·";color:var(--faint)}.wl:last-child:after{content:""}
 #hint{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:var(--faint)}
-#realtor-workbench article{padding:12px 0;border-top:1px solid #444;overflow-wrap:anywhere}#realtor-workbench input,#realtor-workbench select{font:inherit;max-width:100%;box-sizing:border-box}#realtor-workbench label{display:block;margin:12px 0}#realtor-workbench summary{padding:12px 0}</style></head><body>
+#realtor-workbench article{padding:12px 0;border-top:1px solid #444;overflow-wrap:anywhere}#realtor-workbench input,#realtor-workbench select{font:inherit;max-width:100%;box-sizing:border-box}#realtor-workbench label{display:block;margin:12px 0}#realtor-workbench summary{padding:12px 0}#ace-panel[hidden]{display:none}#ace-panel{position:fixed;right:0;top:0;bottom:0;width:min(480px,100vw);z-index:90;background:#262626;border:1px solid #666;padding:16px;box-sizing:border-box;display:flex;flex-direction:column;box-shadow:0 0 60px #0009}#ace-panel header{display:flex;justify-content:space-between;gap:12px;align-items:center}#ace-messages{flex:1;overflow-y:auto;min-height:80px;margin:16px 0;white-space:pre-wrap;overflow-wrap:anywhere}.ace-message{padding:12px;border-radius:10px;background:#333;margin-bottom:12px}.ace-message.julianna{background:#393048}#ace-panel textarea{width:100%;box-sizing:border-box;font:inherit;padding:12px;background:#181818;color:#eee;border:1px solid #777;border-radius:8px}#ace-panel button{min-height:44px;padding:10px 16px}#ace-panel small{margin-top:12px;color:#bbb}#ace-status{font-size:14px;color:#dccbff}#ace-panel label{display:block;margin-bottom:6px}@media(max-width:600px){#ace-panel{top:auto;height:86dvh;width:100%;border-radius:18px 18px 0 0;padding-bottom:max(16px,env(safe-area-inset-bottom))}}</style></head><body>
 
 <div id="lock" style="position:fixed;inset:0;z-index:100;background:#1e1e1e;display:flex;align-items:center;justify-content:center;padding:24px">
  <form id="lf" style="width:100%;max-width:340px;text-align:center">
@@ -146,11 +146,66 @@ function compassify(text){const c=(D.briefing&&D.briefing.compass)||{};let t=esc
     if(re.test(t)&&!t.includes('href'))t=t.replace(re,'<a href="'+u+'" target="_blank">$1</a>')});return t}
 
 
+// Shared follow-up chat: textContent only for all private messages.
+let aceItem=null,aceGeneration=0,acePending=false,fuDirty=false;
+function acePanel(){
+ let panel=document.getElementById('ace-panel');if(panel)return panel;
+ panel=document.createElement('section');panel.id='ace-panel';panel.setAttribute('role','dialog');panel.setAttribute('aria-label','Work on this follow-up with Ace');panel.hidden=true;
+ panel.innerHTML='<header><strong id="ace-title"></strong><button type="button" id="ace-close" aria-label="Close chat">Close</button></header><div id="ace-messages" aria-live="polite"></div><p id="ace-status" role="status"></p><form id="ace-form"><label for="ace-input">Message Ace</label><textarea id="ace-input" maxlength="8000" rows="3" placeholder="Help me work on this follow-up…" required></textarea><button id="ace-send" type="submit">Send</button></form><small>Ace will show you a draft and wait for your yes before sending anything.</small>';
+ document.body.appendChild(panel);
+ document.getElementById('ace-close').onclick=()=>{panel.hidden=true;aceGeneration++;aceItem=null};
+ document.getElementById('ace-form').onsubmit=async e=>{
+  e.preventDefault();if(acePending)return;
+  const input=document.getElementById('ace-input'),text=input.value.trim();if(!text)return;
+  const generation=aceGeneration,pid=aceItem;
+  aceWorking(true);aceStatus('Sending…');
+  try{const r=await sharedRequest('/chat','POST',{item:pid,message:text});input.value='';await aceHistory(pid,generation);acePoll(r.job,pid,generation)}
+  catch(e){if(generation===aceGeneration){aceWorking(false);aceStatus(e.message+' Your message is still in the box.')}}
+ };
+ return panel;
+}
+function aceStatus(text){document.getElementById('ace-status').textContent=text}
+function aceWorking(value){acePending=value;document.getElementById('ace-send').disabled=value;document.getElementById('ace-input').disabled=value}
+async function aceHistory(pid,generation){
+ const result=await sharedRequest('/chat/history?item='+encodeURIComponent(pid));
+ if(generation!==aceGeneration)return result;
+ const box=document.getElementById('ace-messages');box.replaceChildren();
+ for(const m of result.messages){const row=document.createElement('div'),label=document.createElement('strong'),body=document.createElement('div');row.className='ace-message '+m.role;label.textContent=m.role==='ace'?'Ace':'You';body.textContent=m.text;row.append(label,body);box.appendChild(row)}
+ if(!result.messages.length)box.textContent='Ask Ace to help with this follow-up. Your conversation stays here.';
+ box.scrollTop=box.scrollHeight;return result;
+}
+async function acePoll(job,pid,generation){
+ if(generation!==aceGeneration)return;
+ aceWorking(true);aceStatus('Ace is thinking… This can take a few minutes. You can close this panel and come back.');
+ try{
+  const r=await sharedRequest('/chat/job/'+job);if(generation!==aceGeneration)return;
+  if(r.state==='working'){setTimeout(()=>acePoll(job,pid,generation),4000);return}
+  await aceHistory(pid,generation);if(generation!==aceGeneration)return;
+  aceWorking(false);aceStatus(r.state==='done'?'Reply saved.':'Ace could not finish. You can try again.');
+  // Never overwrite notes she has typed but not yet saved.
+  if(!fuDirty){await sharedLoad();await renderPrivateFollowups()}else{document.getElementById('fu-state').textContent=' Ace replied. Save your edits before refreshing the list.'}
+ }catch(e){if(generation!==aceGeneration)return;aceWorking(false);aceStatus('Could not check Ace’s reply. '+e.message+' Close and reopen this chat to reconnect.')}
+}
+async function openAceChat(pid){
+ const item=privateFollowups.items.find(x=>x.id===pid);if(!item)return;
+ const panel=acePanel();panel.hidden=false;aceItem=pid;const generation=++aceGeneration;
+ document.getElementById('ace-title').textContent='Work on '+item.name+' with Ace';document.getElementById('ace-input').value='';aceWorking(true);aceStatus('Loading your conversation…');
+ try{const result=await aceHistory(pid,generation);if(generation!==aceGeneration)return;if(result.pending)acePoll(result.pending,pid,generation);else{aceWorking(false);aceStatus('');document.getElementById('ace-input').focus()}}
+ catch(e){if(generation===aceGeneration){aceWorking(false);aceStatus('Chat unavailable. '+e.message)}}
+}
+function attachAceButtons(){
+ const box=document.getElementById('private-followups');if(!box||!privateFollowups)return;
+ box.querySelectorAll('[data-note]').forEach((note,i)=>{const row=note.closest('.item');if(!row||row.querySelector('[data-ace]'))return;const button=document.createElement('button');button.type='button';button.dataset.ace=privateFollowups.items[i].id;button.textContent='Work on this with Ace';button.onclick=()=>openAceChat(button.dataset.ace);row.appendChild(button)});
+}
+document.addEventListener('input',e=>{if(e.target.closest('#private-followups'))fuDirty=true});
+document.addEventListener('change',e=>{if(e.target.closest('#private-followups'))fuDirty=true});
+
 let privateFollowups=null,sharedRevision=null,sharedToken=null;
 const SHARED_ENDPOINT="https://juliannas-mac-mini.tail6a2ec1.ts.net:8443/followups-api";
 async function sharedRequest(path,method='GET',data){
+ if(!sharedToken&&path!=='/auth'){const auth=await sharedRequest('/auth','POST',{password:CC_SECRET});sharedToken=auth.token;}
  const r=await fetch(SHARED_ENDPOINT+path,{method,headers:{'Content-Type':'application/json',...(sharedToken?{'Authorization':'Bearer '+sharedToken}:{})},...(data?{body:JSON.stringify(data)}:{})});
- const result=await r.json();if(!r.ok)throw new Error(result.error||'Shared storage unavailable');return result;
+ const result=await r.json();if(r.status===401)sharedToken=null;if(!r.ok)throw new Error(result.error||'Shared storage unavailable');return result;
 }
 async function sharedLoad(){
  if(!sharedToken){const auth=await sharedRequest('/auth','POST',{password:CC_SECRET});sharedToken=auth.token;}
@@ -177,7 +232,8 @@ async function renderPrivateFollowups(){
  const legacy=localStorage.getItem('cc_followups_encrypted');
  if(legacy){const button=document.createElement('button');button.type='button';button.textContent='Download earlier device-only edits (encrypted)';button.onclick=()=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([legacy],{type:'application/json'}));a.download='earlier-device-followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};box.appendChild(button);}
  document.getElementById('fu-add').onclick=()=>{const name=prompt('Name');if(!name)return;const what=prompt('Follow-up');if(!what)return;items.push({id:crypto.randomUUID(),name,what,status:'open',notes:''});renderPrivateFollowups()};
- document.getElementById('fu-save').onclick=async()=>{const state=document.getElementById('fu-state'),button=document.getElementById('fu-save');button.disabled=true;try{state.textContent=' Saving to shared list…';const result=await sharedRequest('/followups','PUT',{data:privateFollowups,revision:sharedRevision});const check=await sharedRequest('/followups');if(check.revision!==result.revision)throw new Error('List changed after save; reload before editing again');privateFollowups=check.data;sharedRevision=check.revision;renderPrivateFollowups();state.textContent=' Saved to shared list · Ace can read these edits';}catch(e){state.textContent=' Not confirmed saved: '+e.message+' Keep this page open; download an encrypted backup before reloading.'}finally{button.disabled=false}};
+ document.getElementById('fu-save').onclick=async()=>{const state=document.getElementById('fu-state'),button=document.getElementById('fu-save');button.disabled=true;try{state.textContent=' Saving to shared list…';const result=await sharedRequest('/followups','PUT',{data:privateFollowups,revision:sharedRevision});const check=await sharedRequest('/followups');if(check.revision!==result.revision)throw new Error('List changed after save; reload before editing again');privateFollowups=check.data;sharedRevision=check.revision;fuDirty=false;renderPrivateFollowups();state.textContent=' Saved to shared list · Ace can read these edits';}catch(e){state.textContent=' Not confirmed saved: '+e.message+' Keep this page open; download an encrypted backup before reloading.'}finally{button.disabled=false}};
+ attachAceButtons();
  document.getElementById('fu-export').onclick=async()=>{const blob=new Blob([JSON.stringify(await sealFollowups(privateFollowups))],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='followups-encrypted.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)};
 }
 
